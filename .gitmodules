@@ -1,0 +1,3 @@
+[submodule "manipulator_teleop"]
+	path = manipulator_teleop
+	url = https://github.com/sudhirpratapyadav/manipulator_teleop.git

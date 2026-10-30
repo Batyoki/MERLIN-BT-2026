@@ -1,0 +1,19 @@
+# params/bilateral_params.yaml
+bilateral_node:
+  ros__parameters:
+    master_namespace: "viper_master"   
+    master_pose_topic: "/master/ee_pose"
+    slave_namespace: "reactor"
+    slave_pose_topic: "/reactor/ee_pose_cmd"
+    mirror_axes: [1.0, -1.0, 1.0]       # multiply x,y,z of master pose: -1 flips an axis (mirror)
+    rotation_flip: [0.0, 0.0, 0.0]      # roll,pitch,yaw offsets (radians)
+    scale: 1.0                          # scale cartesian translation between master -> slave
+    control_rate: 100.0                 # Hz: publish rate for mapped commands
+    lp_alpha: 0.2                       # low-pass alpha for pose smoothing (0..1)
+    workspace_limits:
+      x: [-1.0, 1.0]
+      y: [-1.0, 1.0]
+      z: [0.0, 1.2]
+    emergency_topic: "/emergency_stop"  # std_msgs/Bool (true => stop)
+    log_to_console: true
+    publish_raw_master_pose: false     

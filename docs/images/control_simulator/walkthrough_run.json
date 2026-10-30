@@ -1,0 +1,32 @@
+{
+  "backend": "GNU Octave",
+  "defaults": {
+    "rise_time": 0.41999999999999993,
+    "settling_time": NaN,
+    "overshoot_percent": 36.278123694072775,
+    "steady_state_error": 0.13789632133306373,
+    "rms_error": 0.2700515768932577,
+    "peak_control": 10.0,
+    "control_effort": 57.66777622353407,
+    "iae": 2.0476142315852695,
+    "ise": 0.7300078203671763,
+    "itae": 7.595023293792167
+  },
+  "tuned_params": {
+    "Kp": 45.6018,
+    "Ki": 6.094,
+    "Kd": 9.0263
+  },
+  "tuned": {
+    "rise_time": 0.38,
+    "settling_time": 0.96,
+    "overshoot_percent": 3.519772488508255,
+    "steady_state_error": 5.456318197261112e-08,
+    "rms_error": 0.161355917114405,
+    "peak_control": 10.0,
+    "control_effort": 75.03010453895284,
+    "iae": 0.35007199987223336,
+    "ise": 0.26061767719818574,
+    "itae": 0.0749445695397588
+  }
+}

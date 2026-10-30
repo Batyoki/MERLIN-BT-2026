@@ -1,0 +1,78 @@
+# Bilateral teleoperation parameters (RX200 master -> VX300s slave).
+# Loaded by launch/controller_misa.launch.py. Every value here is a ROS
+# parameter declared in controller/controller.py; arrays are per arm joint in
+# the order [waist, shoulder, elbow, wrist_angle, wrist_rotate].
+# Units: rad, s, N·m. Values were checked in experiments/bilateral_sim
+# (MuJoCo, plant +8 % mass, joint friction, 2.69 mA current quantisation).
+
+controller:
+  ros__parameters:
+    control_mode: "misa"            # unilateral | pp | pf | misa (proposed)
+    sides: ["R"]                    # ["L", "R"] for the bimanual setup
+    master_ns: "master"             # topics /masterR/..., /slaveR/...
+    slave_ns: "slave"
+    loop_rate_hz: 50.0
+    state_timeout_s: 0.1
+    log_dir: ""                     # e.g. "/tmp/merlin_logs" -> CSV per run
+
+    # --- state estimation ---------------------------------------------
+    filter_alpha: 0.3               # IIR on q̇ and τ_motor (paper Eq. 1)
+    use_driver_velocity: false      # true: use JointState.velocity from xs_sdk
+    slave_estimator: "momentum"     # momentum | static (old Eq. 2) | none
+    observer_gain: 15.0             # K_O [rad/s], keep K_O * dt < 0.5
+
+    # --- joint conventions ----------------------------------------------
+    # raw -> URDF offsets. At the Interbotix sleep pose the RX200 must read
+    # shoulder ≈ -1.80 (rx200.yaml sleep_positions); if it reads ≈ +1.31,
+    # set master_joint_offset[1] = -3.11. Gravity compensation uses the
+    # corrected angle, so this must be right before enabling current mode.
+    master_joint_offset: [0.0, 0.0, 0.0, 0.0, 0.0]
+    slave_joint_offset:  [0.0, 0.0, 0.0, 0.0, 0.0]
+    map_scale:  [1.0, 1.0, 1.0, 1.0, 1.0]          # slave ref = scale*q_m + offset
+    map_offset: [0.0, 0.0, 0.0, 0.0, 0.0]
+    slave_has_forearm_roll: true
+    forearm_roll_angle: 0.0
+
+    # --- master impedance (Eq. 4) ---------------------------------------
+    Dmd: [0.08, 0.12, 0.08, 0.03, 0.01]            # N·m·s/rad
+    Kmd: [3.0, 5.0, 3.0, 1.0, 0.3]                 # N·m/rad (position channel)
+    tau_master_max: [2.0, 4.0, 2.0, 2.0, 0.75]     # ≈ 50 % stall, must exceed gravity
+
+    # --- four-channel gains (Eq. 6) --------------------------------------
+    kof: 0.3                        # force channel; 0.6 limit-cycles with 60 ms delay
+    kom: 1.0                        # position channel
+    tau_dead_zone: [0.15, 0.3, 0.2, 0.1, 0.05]     # N·m
+    force_map: "jacobian"           # jacobian | identity
+    s_force: 1.0
+
+    # --- baseline gains (control_mode: pp) --------------------------------
+    pp_Kp: [3.0, 5.0, 3.0, 1.0, 0.3]
+    pp_Kd: [0.05, 0.08, 0.05, 0.02, 0.005]
+
+    # --- slave admittance (Eq. 5): design values, ω_n ≈ 10 rad/s, ζ = 1 ----
+    Msd: [0.30, 0.40, 0.30, 0.10, 0.04]
+    Dsd: [6.0, 8.0, 6.0, 2.0, 0.8]
+    Ksd: [30.0, 40.0, 30.0, 10.0, 4.0]
+    q_e_max: [0.3, 0.3, 0.3, 0.3, 0.3]
+
+    # --- slave MPC (Eq. 7) -------------------------------------------------
+    use_mpc: true
+    mpc_horizon: 10
+    # Identify on YOUR arm: tools/identify_position_loop.py (step test).
+    pos_loop_omega: [25.7, 23.4, 31.1, 98.7, 94.6]
+    pos_loop_zeta:  [0.27, 0.30, 0.42, 0.66, 0.46]
+    dq_slave_max: [3.0, 3.0, 3.0, 3.0, 3.0]
+    du_slave_max: [0.15, 0.15, 0.15, 0.15, 0.15]   # rad per tick
+    mpc_Q: 100.0
+    mpc_P: 300.0
+    mpc_R: 0.5
+    # ADMM solver of the position MPC. rho = 0.3 converges to the exact QP in <= 60 iterations
+    # (rho = 10 did not: docs/CODE_FIXES.md B7).
+    mpc_rho: 0.3
+    mpc_iters: 60
+
+    # --- energy tank (passivity) -------------------------------------------
+    use_tank: true
+    tank_T0: 0.5
+    tank_T_min: 0.05
+    tank_T_max: 1.0

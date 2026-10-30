@@ -1,0 +1,15 @@
+# Interbotix operating modes for the RX200 MASTER.
+# The arm group must be in current mode, otherwise the current commands sent
+# by the controller are ignored (the old setup never shipped this file).
+groups:
+  arm:
+    operating_mode: current
+    profile_type: velocity
+    profile_velocity: 0
+    profile_acceleration: 0
+    torque_enable: true
+
+singles:
+  gripper:
+    operating_mode: position
+    torque_enable: false        # the operator moves the master gripper by hand

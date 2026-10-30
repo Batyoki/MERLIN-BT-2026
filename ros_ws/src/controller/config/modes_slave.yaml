@@ -1,0 +1,19 @@
+# Interbotix operating modes for the VX300s SLAVE.
+# Position mode WITHOUT a trajectory profile, so the slave's position loop is
+# the second-order system the MPC was identified on. A time/velocity profile
+# adds its own lag and must then be included in the identification.
+groups:
+  arm:
+    operating_mode: position
+    profile_type: velocity
+    profile_velocity: 0
+    profile_acceleration: 0
+    torque_enable: true
+
+singles:
+  gripper:
+    operating_mode: position
+    profile_type: velocity
+    profile_velocity: 0
+    profile_acceleration: 0
+    torque_enable: true

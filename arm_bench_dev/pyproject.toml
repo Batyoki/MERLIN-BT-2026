@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = {find = {where = ["src"]}}
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[project]
+name = "arm-bench"
+version = "0.1.0"
+description = "Robot arm benchmarking and control toolkit"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "typer",
+    "numpy",
+    "pyyaml",
+    "rich",
+    "pillow",
+    "matplotlib",
+    "scipy",
+    "dynamixel-sdk",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+full = [
+    "opencv-python",
+    "pygame",
+    "pillow",
+    "dynamixel-sdk",
+    "fastapi",
+    "uvicorn",
+    "websockets",
+]
+cameras = [
+    "opencv-python",
+]
+joystick = [
+    "pygame",
+]
+dynamixel = [
+    "dynamixel-sdk",
+]
+webxr = [
+    "fastapi",
+    "uvicorn",
+    "websockets",
+]
+matlab = [
+    "matlabengine",
+]
+visualization = [
+    "matplotlib",
+    "scipy",
+]
+dev = [
+    "opencv-python",
+    "pygame",
+    "pillow",
+    "matplotlib",
+    "scipy",
+    "dynamixel-sdk",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.scripts]
+arm-bench = "arm_bench.cli:app"

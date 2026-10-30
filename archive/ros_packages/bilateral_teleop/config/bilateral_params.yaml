@@ -1,0 +1,37 @@
+# Bilateral Teleoperation Configuration
+# ReactorX-150 (Leader) -> ViperX-300s (Follower)
+
+bilateral_teleop:
+  ros__parameters:
+    # Leader Configuration (ReactorX-150, 5DOF)
+    leader:
+      robot_name: "rx150"
+      group_name: "interbotix_arm"
+      base_link: "rx150/base_link"
+      end_effector_link: "rx150/ee_gripper_link"
+      joint_names:
+        - "waist"
+        - "shoulder"
+        - "elbow"
+        - "wrist_angle"
+        - "wrist_rotate"
+    
+    # Follower Configuration (ViperX-300s, 6DOF)
+    follower:
+      robot_name: "vx300s"
+      group_name: "interbotix_arm"
+      base_link: "vx300s/base_link"
+      end_effector_link: "vx300s/ee_gripper_link"
+      joint_names:
+        - "waist"
+        - "shoulder"
+        - "elbow"
+        - "forearm_roll"
+        - "wrist_angle"
+        - "wrist_rotate"
+    
+    # Control Parameters
+    control_rate: 30.0        # Hz - control loop frequency
+    ik_timeout: 0.1           # seconds - IK solver timeout
+    position_scale: 1.0       # Scale factor for end-effector position
+    use_move_group: false     # Use MoveIt2 move_group action (slower)

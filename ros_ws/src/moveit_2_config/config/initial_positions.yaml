@@ -1,0 +1,11 @@
+# Default initial positions for vx300s's ros2_control fake system
+
+initial_positions:
+  elbow: 0
+  forearm_roll: 0
+  gripper: 0
+  left_finger: 0
+  shoulder: 0
+  waist: 0
+  wrist_angle: 0
+  wrist_rotate: 0

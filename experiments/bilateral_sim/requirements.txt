@@ -1,0 +1,8 @@
+# Versions the committed results were produced with (Python 3.13). Older versions of numpy/scipy are fine;
+# MuJoCo and Pinocchio matter only through the physics/dynamics, see docs/EVALUATION_METHODOLOGY.md.
+numpy>=2.0
+scipy>=1.13
+mujoco>=3.3        # results: 3.17.0
+pin>=3.0           # Pinocchio; results: 4.1.0
+matplotlib>=3.8
+pytest

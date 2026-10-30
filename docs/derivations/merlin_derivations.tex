@@ -1,0 +1,571 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,bm,booktabs,array,enumitem}
+\usepackage{microtype}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\theoremstyle{definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{definition}{Definition}
+
+\setlength{\emergencystretch}{3em}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\dz}{\operatorname{dz}}
+\newcommand{\sat}{\operatorname{sat}}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\sign}{\operatorname{sign}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\test}[1]{\par\smallskip{\raggedright\renewcommand{\_}{\textunderscore\allowbreak}\noindent\textit{Numerical check:} \texttt{#1}.\par}}
+
+\title{\textbf{MERLIN: Detailed Derivations of the Bilateral Controller,\\the Simulation Model and the Evaluation Metrics}}
+\author{Saipushkar Nagaraj, Yash Sanjeev Halbhavi and Ameer K. Mulla\\[2pt]\small Supplementary document to the paper\\\small\emph{MERLIN -- Multi-arm Experimental Robotics Learning and INtegration}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}\noindent
+This document derives every equation used by the MERLIN bilateral controller and by its evaluation: the external-torque estimator, the master impedance law, the slave admittance and its exact discretisation, the force reflection between arms of different kinematics, the baseline teleoperation laws, the offset-free position MPC and its ADMM solver, the energy tank on the feedback channel, the identification of the servo position loop, the simulation model, the metrics, and the parameter-tuning objectives of the Control Simulator. Each result is stated with its assumptions and proved. Statements that can be checked numerically are tied to the unit tests in \texttt{ros\_ws/src/controller/test/} of the repository. Section~\ref{sec:limits} lists what is not proven.
+\end{abstract}
+
+\tableofcontents
+
+%% =====================================================================
+\section{Scope, notation and standing assumptions}\label{sec:scope}
+%% =====================================================================
+The teleoperation pair is a ReactorX\,200 master and a ViperX\,300S slave with the forearm-roll joint locked. Each arm has $n=5$ active joints
+$q=[q_{\text{waist}},q_{\text{shoulder}},q_{\text{elbow}},q_{\text{wrist angle}},q_{\text{wrist rotate}}]^\top$.
+The controller runs at $50$\,Hz, $\Delta t=0.02$\,s. Subscripts $m$ and $s$ denote master and slave. For a vector $x$, $\diag(x)$ is the diagonal matrix,
+$\odot$ the elementwise product, $\sat_a(x)=\clip(x,-a,a)$ and $\dz_\delta(x)=\sign(x)\max(|x|-\delta,0)$ act elementwise, and
+$\mathcal F_\alpha\{x\}[k]=\alpha x[k]+(1-\alpha)\mathcal F_\alpha\{x\}[k-1]$ is a first-order IIR filter.
+
+\begin{assumption}[rigid-body model]\label{as:rb}
+For each arm, $M(q)=M(q)^\top\succ0$ is the joint-space inertia matrix, $C(q,\dot q)$ the Coriolis matrix built from the Christoffel symbols, and $G(q)$ the gravity torque:
+\begin{equation}\label{eq:dyn}
+M(q)\ddot q+C(q,\dot q)\dot q+G(q)=\tau_m+\tau_{ext}.
+\end{equation}
+$\tau_m$ is the motor torque and $\tau_{ext}$ the \emph{external torque}: everything not in the model, i.e.\ contact and operator forces, joint friction and model error.
+The Christoffel construction gives $\dot M=C+C^\top$, hence $\dot q^\top(\dot M-2C)\dot q=0$.
+\end{assumption}
+
+\begin{assumption}[actuation and sensing]\label{as:act}
+Motor torque is $\tau_m=n_\mu\odot k_t\odot10^{-3}I$, with $I$ the present current in mA (as published by the Interbotix \texttt{xs\_sdk}), $k_t$ the torque constant in N\,m/A,
+and $n_\mu$ the number of motors per joint (two for the shoulder of the RX200 and for the shoulder and elbow of the VX300S). The current loop is much faster than $50$\,Hz.
+Joint positions are measured; $\dot q$ is obtained from them by a backward difference with the message time stamps.
+\end{assumption}
+
+\begin{assumption}[slave position loop]\label{as:loop}
+Each slave joint is driven by a servo position loop, i.e.\ it accepts a position command $u$, not a torque. Seen from $u$, joint $i$ behaves as a decoupled second-order system
+with a lumped, slowly varying acceleration disturbance $c_i$ (gravity sag, friction):
+\begin{equation}\label{eq:loop}
+\ddot q_i=\omega_i^{2}(u_i-q_i)-2\zeta_i\omega_i\dot q_i+c_i .
+\end{equation}
+$\omega_i,\zeta_i$ are identified per joint (Section~\ref{sec:ident}). This is a modelling assumption; it is validated in simulation in Section~\ref{sec:validation}.
+\end{assumption}
+
+\paragraph{Sign convention.}
+$\tau_{ext}$ is the torque the environment applies \emph{on} the joint. The torque the controller renders on the operator points in the same direction as the environment's torque on the slave,
+so the operator is pushed back.
+
+%% =====================================================================
+\section{External-torque estimation}\label{sec:obs}
+%% =====================================================================
+\subsection{The static residual}
+\begin{lemma}[static residual]\label{lem:static}
+Define $\hat\tau^{\text{static}}:=G(q)+C(q,\dot q)\dot q-\tau_m$. Then $\hat\tau^{\text{static}}=\tau_{ext}-M(q)\ddot q$.
+\end{lemma}
+\begin{proof}
+Solve \eqref{eq:dyn} for $\tau_{ext}$: $\tau_{ext}=M\ddot q+C\dot q+G-\tau_m$, and subtract $M\ddot q$.
+\end{proof}
+The static residual is exact only when $M\ddot q$ is negligible. On a position-controlled arm the servo loop accelerates the links, and $M\ddot q$ appears as a false contact torque.
+In the simulation study the shoulder inertia is $M_{22}\approx0.23$--$0.30$\,kg\,m$^2$; the free-motion false torque at the shoulder is $0.25$, $0.48$ and $1.08$\,N\,m RMS at one, two and three
+times the nominal motion speed, and its correlation with $-M\ddot q$ is $0.67$, $0.81$ and $0.92$. At low speed friction, mass mismatch and current noise dominate; at high speed $M\ddot q$ does.
+\test{test\_static\_residual\_equals\_tau\_ext\_minus\_Mqdd, test\_inverse\_dynamics\_decomposition}
+
+\subsection{Generalised-momentum observer}
+Define the generalised momentum $p:=M(q)\dot q$ and $\beta(q,\dot q):=G(q)-C(q,\dot q)^\top\dot q$.
+
+\begin{lemma}[momentum balance]\label{lem:mom}
+Under Assumption~\ref{as:rb}, $\dot p=\tau_m+\tau_{ext}-\beta(q,\dot q)$.
+\end{lemma}
+\begin{proof}
+$\dot p=\dot M\dot q+M\ddot q$. Substituting \eqref{eq:dyn}, $M\ddot q=\tau_m+\tau_{ext}-C\dot q-G$, and $\dot M=C+C^\top$:
+$\dot p=(C+C^\top)\dot q+\tau_m+\tau_{ext}-C\dot q-G=\tau_m+\tau_{ext}+C^\top\dot q-G$.
+\end{proof}
+
+\begin{theorem}[observer]\label{thm:obs}
+Let $K_O=\diag(k_1,\dots,k_n)$, $k_i>0$, and define
+\begin{equation}\label{eq:obs}
+r(t)=K_O\Big(p(t)-p(0)-\int_0^t\big(\tau_m+C^\top\dot q-G+r\big)\,ds\Big).
+\end{equation}
+Then $r(0)=0$ and $\dot r=K_O(\tau_{ext}-r)$. In particular $r_i$ is a first-order low-pass filter of $\tau_{ext,i}$ with cut-off $k_i$\,rad/s,
+$r_i(t)=\int_0^te^{-k_i(t-s)}k_i\,\tau_{ext,i}(s)\,ds$, and $r\to\tau_{ext}$ for a constant $\tau_{ext}$. No acceleration is needed.
+\end{theorem}
+\begin{proof}
+$r(0)=0$ by construction. Differentiating \eqref{eq:obs}, $\dot r=K_O(\dot p-\tau_m-C^\top\dot q+G-r)$. By Lemma~\ref{lem:mom}, $\dot p-\tau_m-C^\top\dot q+G=\tau_{ext}$.
+The solution of the scalar linear ODE $\dot r_i=k_i(\tau_{ext,i}-r_i)$, $r_i(0)=0$, is the stated convolution; for constant $\tau_{ext}$ it equals $\tau_{ext,i}(1-e^{-k_it})$.
+\end{proof}
+\test{test\_Mdot\_equals\_C\_plus\_Ct, test\_observer\_converges\_to\_constant\_external\_torque}
+
+\begin{remark}[bias from model error]\label{rem:bias}
+If the implementation uses imperfect $\tilde M,\tilde G,\tilde C,\tilde k_t$, repeating the proof gives $\dot{\tilde r}=K_O(\tau_{ext}+\delta-\tilde r)$ with
+\[
+\delta=(\tau_m-\tilde\tau_m)+(\tilde\beta-\beta)+\Delta\dot M\,\dot q+\Delta M\,\ddot q,\qquad\Delta M=\tilde M-M.
+\]
+The estimate is the low-passed external torque \emph{plus} a bias from the torque constants, from gravity and Coriolis errors, and from the inertia error times the acceleration
+($\Delta M\ddot q$, not $M\ddot q$). In the simulation the link masses are $8\%$ larger than the controller's model, so the gravity term alone gives $\delta\approx0.08\,G\approx0.2$\,N\,m at
+the shoulder and elbow ($G=[-2.3,-3.0]$\,N\,m at the reference pose), the order of the $0.25$--$0.3$\,N\,m RMS error measured in the estimation study.
+On hardware, $k_t$ and the link masses are calibrated with known weights.
+\end{remark}
+
+\begin{proposition}[discrete observer]\label{prop:disc}
+Implement \eqref{eq:obs} at sample time $\Delta t$ with the rectangle rule,
+$S[k]=S[k-1]+\Delta t\,(\tau_m[k]-\beta[k]+r[k-1])$ and $r[k]=K_O(p[k]-p[0]-S[k])$. If $p[k]-p[k-1]=\Delta t(\tau_m[k]-\beta[k]+\tau_{ext}[k])+\varepsilon[k]$,
+with $\varepsilon[k]$ the quadrature error of the integral of $\dot p$, then
+\begin{equation}\label{eq:iir}
+r[k]=(1-K_O\Delta t)\,r[k-1]+K_O\Delta t\,\tau_{ext}[k]+K_O\varepsilon[k].
+\end{equation}
+This is a first-order IIR filter, stable iff $0<k_i\Delta t<2$ and monotone iff $k_i\Delta t<1$. With $K_O=15$\,rad/s and $\Delta t=0.02$\,s, $a=K_O\Delta t=0.3$, and the equivalent
+time constant is $-\Delta t/\ln(1-a)=56$\,ms (continuous value $1/K_O=67$\,ms).
+\end{proposition}
+\begin{proof}
+Subtract the update for $r[k-1]$ from the one for $r[k]$: $r[k]-r[k-1]=K_O\big((p[k]-p[k-1])-\Delta t(\tau_m[k]-\beta[k]+r[k-1])\big)$. Inserting the balance for $p[k]-p[k-1]$ gives
+$r[k]-r[k-1]=K_O\Delta t(\tau_{ext}[k]-r[k-1])+K_O\varepsilon[k]$, which is \eqref{eq:iir}. The pole is $1-k_i\Delta t$, inside the unit circle iff $0<k_i\Delta t<2$, and non-negative iff $k_i\Delta t\le1$.
+\end{proof}
+\test{test\_discrete\_observer\_recursion\_is\_exact\_iir (the recursion holds to $10^{-10}$ when $\varepsilon=0$)}
+
+\begin{remark}[unfiltered inputs]
+The implementation feeds the observer the unfiltered velocity and current. An IIR velocity filter with $\alpha=0.3$ has a mean delay of $(1-\alpha)/\alpha=2.3$ samples ($47$\,ms), comparable with the
+observer time constant; with filtered inputs $p=M\dot q$ lags the torque integral, which acts like a negative inertia in the force loop. In simulation this excited a master--slave limit cycle
+in the force loop. This is an empirical observation, not a theorem.
+\end{remark}
+
+%% =====================================================================
+\section{Master impedance law}\label{sec:master}
+%% =====================================================================
+The RX200 master runs in current mode, so the commanded current is applied as torque. The master law is
+\begin{equation}\label{eq:master}
+\tau_{m,cmd}=\hat G_m(q_m)-D_{md}\dot q_m+\gamma\,\tau_f ,
+\end{equation}
+where $\tau_f$ is the feedback torque of Section~\ref{sec:map} (it depends on slave data and on $q_m-q_s$ only), and $\gamma\in[0,1]$ is the gate of the energy tank (Section~\ref{sec:tank}).
+The command is finally saturated at the torque limits of the master.
+
+\begin{proposition}[passivity of the master]\label{prop:masterpass}
+Let $\hat G_m=G_m$ and let the operator apply $\tau_h=J_m^\top F_h$. With $V=\tfrac12\dot q_m^\top M_m\dot q_m$,
+\[
+\dot V=\dot q_m^\top\tau_h-\dot q_m^\top D_{md}\dot q_m+\gamma\,\dot q_m^\top\tau_f .
+\]
+\end{proposition}
+\begin{proof}
+$\dot V=\dot q^\top M\ddot q+\tfrac12\dot q^\top\dot M\dot q=\dot q^\top(\tau_{m,cmd}+\tau_h-C\dot q-G)+\tfrac12\dot q^\top\dot M\dot q$. By Assumption~\ref{as:rb},
+$\dot q^\top(\tfrac12\dot M-C)\dot q=0$. Insert \eqref{eq:master}; the gravity terms cancel.
+\end{proof}
+With $\tau_f=0$ the master is output-strictly passive from $\tau_h$ to $\dot q_m$. The last term, $\gamma\,\dot q_m^\top\tau_f=\gamma P_{out}$, is the power the feedback channel delivers to the operator;
+it is the quantity the energy tank bounds. Gravity compensation is approximate on hardware, so the statement holds up to $\dot q^\top(\hat G-G)$.
+
+\begin{lemma}[design rule: no feedback of the master's own current]\label{lem:pole}
+Suppose the master's measured torque is its command delayed by one sample and IIR-filtered, $\tilde\tau[k]=\mathcal F_\alpha\{\tau_{cmd}[k-1]\}$, and consider a law that adds an estimate of the master's
+external torque computed from that measurement, $\tau_{cmd}=\hat G-D_{md}\dot q+\hat\tau_{ext,m}+\tau_f$ with $\hat\tau_{ext,m}=\tilde\tau-C\dot q-\hat G$.
+Then $\tau_{cmd}[k]=\tilde\tau[k]+b[k]$ with $b=\tau_f-D_{md}\dot q-C\dot q$, which has a pole at $z=1$: a constant $b\ne0$ makes $\tau_{cmd}$ ramp by $\alpha b$ per sample until the torque limit.
+\end{lemma}
+\begin{proof}
+Substitute $\hat\tau_{ext,m}$: the $\hat G$ terms cancel and $\tau_{cmd}[k]=\tilde\tau[k]+b[k]$. With $\tilde\tau[k]=\alpha\tau_{cmd}[k-1]+(1-\alpha)\tilde\tau[k-1]$,
+the transfer function from $b$ to $\tau_{cmd}$ is $\big(1-(1-\alpha)z^{-1}\big)/(1-z^{-1})$, with its pole at $z=1$.
+For constant $b$, $\tilde\tau[k]=\alpha(\tilde\tau[k-1]+b)+(1-\alpha)\tilde\tau[k-1]=\tilde\tau[k-1]+\alpha b$.
+\end{proof}
+\test{test\_master\_law\_with\_own\_estimate\_has\_a\_pole\_at\_one}
+In current mode the measured current is, up to noise and delay, the commanded current, so it carries no information about the operator that the command does not already contain. Any constant bias
+(a gravity-model error, a sensor offset, the position-channel term) would be integrated. Law \eqref{eq:master} has no path from the master's measured current to its command, so the pole does not arise.
+
+%% =====================================================================
+\section{Slave admittance and its exact discretisation}\label{sec:adm}
+%% =====================================================================
+For each slave joint the compliance offset $q_e$ obeys the desired impedance
+\begin{equation}\label{eq:adm}
+M_d\ddot q_e+D_d\dot q_e+K_dq_e=u,\qquad u=\dz_\delta(\hat\tau_{ext,s}),\qquad q_{s,\mathrm{ref}}=Sq_m+o+q_e,
+\end{equation}
+with design parameters $M_d,D_d,K_d>0$ and the joint mapping $S=\diag(s_i)$, $o$ from master to slave. With $x=[q_e,\dot q_e]^\top$,
+$A=\begin{bmatrix}0&1\\-K_d/M_d&-D_d/M_d\end{bmatrix}$, $B=\begin{bmatrix}0\\1/M_d\end{bmatrix}$, we have $\dot x=Ax+Bu$.
+
+\begin{theorem}[exact zero-order-hold discretisation]\label{thm:zoh}
+If $u$ is constant on $[k\Delta t,(k+1)\Delta t)$, then $x[k+1]=A_dx[k]+B_du[k]$ exactly, with $A_d=e^{A\Delta t}$, $B_d=\int_0^{\Delta t}e^{As}B\,ds$, and
+\begin{equation}\label{eq:vanloan}
+\exp\!\Big(\Delta t\begin{bmatrix}A&B\\0&0\end{bmatrix}\Big)=\begin{bmatrix}A_d&B_d\\0&1\end{bmatrix}.
+\end{equation}
+\end{theorem}
+\begin{proof}
+Variation of constants gives $x(t_{k+1})=e^{A\Delta t}x(t_k)+\int_0^{\Delta t}e^{A(\Delta t-s)}B\,u[k]\,ds$, and the substitution $s\mapsto\Delta t-s$ turns the integral into $B_du[k]$.
+For \eqref{eq:vanloan}, let $E(t)=\exp(t\bar A)$ with $\bar A=\begin{bmatrix}A&B\\0&0\end{bmatrix}$ and write $E(t)=\begin{bmatrix}E_{11}&F\\0&1\end{bmatrix}$.
+From $\dot E=\bar AE$: $\dot E_{11}=AE_{11}$, $E_{11}(0)=I$, so $E_{11}=e^{At}$; and $\dot F=AF+B$, $F(0)=0$, so $F=\int_0^te^{A(t-s)}B\,ds=\int_0^te^{As}B\,ds$ \cite{vanloan1978}.
+\end{proof}
+\test{test\_zoh\_matches\_fine\_integration (agrees with a $10^{-12}$-tolerance ODE solve to $10^{-10}$)}
+
+\begin{proposition}[stability; explicit Euler]\label{prop:euler}
+(i) For $M_d,D_d,K_d>0$ every eigenvalue $\lambda$ of $A$ has $\operatorname{Re}\lambda<0$, so the eigenvalues $e^{\lambda\Delta t}$ of $A_d$ satisfy $|e^{\lambda\Delta t}|<1$ for \emph{every} $\Delta t>0$.
+(ii) The static deflection is $q_e=u/K_d$.
+(iii) Explicit Euler, $x[k+1]=(I+\Delta tA)x[k]+\Delta tBu[k]$, is stable iff $|1+\lambda\Delta t|<1$ for both eigenvalues.
+\end{proposition}
+\begin{proof}
+(i) The eigenvalues are the roots of $M_ds^2+D_ds+K_d=0$; a real quadratic with coefficients of one sign has both roots in the open left half-plane (Routh--Hurwitz). (ii) Set $\dot x=0$.
+(iii) The eigenvalues of $I+\Delta tA$ are $1+\lambda\Delta t$.
+\end{proof}
+\test{test\_euler\_unstable\_with\_physical\_wrist\_inertia, test\_admittance\_static\_deflection\_is\_tau\_over\_K}
+
+\begin{remark}[why $M_d$ is a design value, not the link inertia]
+If the physical inertia of the wrist-rotate link, $7.29\times10^{-4}$\,kg\,m$^2$, were used as $M_d$ with $D_d=0.4$ and $K_d=10$, the roots would be $\lambda=-26.3$ and $-522.4$\,s$^{-1}$
+($\omega_n=117$\,rad/s, $\zeta=2.34$). At $\Delta t=20$\,ms, $|1+\lambda\Delta t|=0.47$ and $9.45$, so explicit Euler would diverge, while $|e^{\lambda\Delta t}|=0.59$ and $3\times10^{-5}$.
+The design values $M_d=[0.30,0.40,0.30,0.10,0.04]$, $D_d=[6,8,6,2,0.8]$, $K_d=[30,40,30,10,4]$ give $\omega_n=\sqrt{K_d/M_d}=10$\,rad/s and $\zeta=1$ on every joint, a bandwidth below that of the
+slave position loop.
+\end{remark}
+
+\begin{remark}[saturation]
+The implementation saturates $|q_e|\le q_{e,\max}$ and sets $\dot q_e=0$ when the state pushes into the limit (anti-windup). The saturated filter is bounded by construction;
+Theorem~\ref{thm:zoh} and Proposition~\ref{prop:euler} describe the unsaturated range.
+\end{remark}
+
+%% =====================================================================
+\section{Force reflection between kinematically different arms}\label{sec:map}
+%% =====================================================================
+Reflecting joint torques one-to-one renders the wrong Cartesian force when the arms differ. At the reference pose the RX200 reaches $0.388$\,m and the VX300S $0.530$\,m (ratio $1.37$).
+
+\begin{proposition}[damped least-squares wrench]\label{prop:dls}
+Let $J_s\in\Real^{6\times n}$ be the slave end-effector Jacobian and $\lambda>0$. The wrench
+\begin{equation}\label{eq:dls}
+\hat F_s=\arg\min_F\ \|J_s^\top F-\hat\tau\|^2+\lambda^2\|F\|^2=J_s\big(J_s^\top J_s+\lambda^2I\big)^{-1}\hat\tau
+\end{equation}
+satisfies $J_s^\top\hat F_s=\hat\tau-\lambda^2(J_s^\top J_s+\lambda^2I)^{-1}\hat\tau$, i.e.\ $J_s^\top\hat F_s\to\hat\tau$ as $\lambda\to0$ when $J_s$ has full column rank.
+\end{proposition}
+\begin{proof}
+Setting the gradient to zero, $J_s(J_s^\top F-\hat\tau)+\lambda^2F=0$, so $(J_sJ_s^\top+\lambda^2I)F=J_s\hat\tau$. The push-through identity
+$(J_sJ_s^\top+\lambda^2I)^{-1}J_s=J_s(J_s^\top J_s+\lambda^2I)^{-1}$ gives \eqref{eq:dls}. Then $J_s^\top\hat F_s=J_s^\top J_s(J_s^\top J_s+\lambda^2I)^{-1}\hat\tau=\hat\tau-\lambda^2(J_s^\top J_s+\lambda^2I)^{-1}\hat\tau$.
+\end{proof}
+Five joints cannot produce every wrench, so the $6$-dimensional wrench is not unique; \eqref{eq:dls} selects the minimum-norm one. The feedback torque on the master is
+\begin{equation}\label{eq:force}
+\tau_f=k_{of}\,J_m^\top S_f\,\hat F_s-k_{om}\,S\,K_{md}\,(Sq_m+o-q_s),\qquad \hat F_s \text{ from \eqref{eq:dls} with } \hat\tau=\dz_\delta(\hat\tau_{ext,s}),
+\end{equation}
+with $S_f=\diag(s_fI_3,\,s_\mu I_3)$. The first term is the force channel, the second the position channel; the factor $S$ maps the slave-side position error back to master joints
+(it is the transpose of the joint map $q\mapsto Sq$). The implementation uses $\lambda=0.02$.
+
+\begin{proposition}[consistency]\label{prop:consistent}
+If the two arms have the same Jacobian at their configurations, $S_f=I$ and $\lambda\to0$, then $J_m^\top\hat F_s=\hat\tau$: the Jacobian map reduces to joint-by-joint reflection.
+For two different arms and the same joint torque $\tau$, joint-by-joint reflection produces the master-side force $F_{\rm id}=(J_m^\top)^{+}\tau$, whereas the force that produced $\tau$ on the slave is
+$F_s=(J_s^\top)^{+}\tau$; at the reference pose $\|F_{\rm id}\|/\|F_s\|\approx1.3$.
+\end{proposition}
+\begin{proof}
+The first claim is Proposition~\ref{prop:dls} with $J_m=J_s$. The ratio follows from $\tau=J^\top F$ (virtual work, $\delta W=\tau^\top\delta q=F^\top J\delta q$): a shorter arm needs a larger
+force for the same joint torque.
+\end{proof}
+\test{test\_dls\_wrench\_reproduces\_joint\_torque, test\_identical\_arms\_give\_identity\_map, test\_different\_arms\_over\_render\_joint\_torque\_reflection}
+
+\begin{remark}[power]
+$\Gamma=J_m^\top S_fJ_s^{+\top}$ is not power-preserving between the arms, because the arms are coupled in joint space ($q_m\leftrightarrow q_s$), not in task space. The slave-side power
+$\hat\tau^\top\dot q_s=\hat F^\top\dot x_s$ and the master-side power $\tau_f^\top\dot q_m=\hat F^\top S_f^\top\dot x_m$ are equal only if $\dot x_m=S_f^{-\top}\dot x_s$, which joint-space mapping does not enforce.
+This is why the force channel is wrapped by the energy tank of Section~\ref{sec:tank}.
+\end{remark}
+
+%% =====================================================================
+\section{Teleoperation architectures compared}\label{sec:baselines}
+%% =====================================================================
+All architectures share the estimator of Section~\ref{sec:obs}, the master law \eqref{eq:master} and the slave interface. They differ in $\tau_f$ and in the slave command $u$.
+With $\bar q_m=Sq_m+o$ the mapped master position and $\Delta u_{\max}$ the command-rate limit, the rate-limited reference is
+$u=\clip(\bar q_m,\ u_{-1}-\Delta u_{\max},\ u_{-1}+\Delta u_{\max})$.
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Architecture & feedback torque $\tau_f$ & slave command $u$\\
+\midrule
+Unilateral & $0$ & rate-limited $\bar q_m$\\
+Position--position & $-S\big(K_p(\bar q_m-q_s)+K_d(S\dot q_m-\dot q_s)\big)$ & rate-limited $\bar q_m$\\
+Position--force & $k_{of}\,\dz_\delta(\hat\tau_{ext,s})$ (joint by joint, no tank) & rate-limited $\bar q_m$\\
+Proposed without MPC & \eqref{eq:force}, gated by the tank & rate-limited $q_{s,\mathrm{ref}}$ of \eqref{eq:adm}\\
+Proposed & \eqref{eq:force}, gated by the tank & MPC \eqref{eq:mpc}\\
+\bottomrule
+\end{tabular}
+\end{center}
+In the simulation study $K_p=[3,5,3,1,0.3]$, $K_d=[0.05,0.08,0.05,0.02,0.005]$, $K_{md}=[3,5,3,1,0.3]$, $D_{md}=[0.08,0.12,0.08,0.03,0.01]$, $k_{of}=0.3$, $k_{om}=1$,
+$\delta=[0.15,0.3,0.2,0.1,0.05]$\,N\,m, $\Delta u_{\max}=0.15$\,rad per sample, and $q_{e,\max}=0.3$\,rad.
+
+%% =====================================================================
+\section{Slave MPC on the position loop}\label{sec:mpc}
+%% =====================================================================
+\subsection{Model and prediction}
+By Theorem~\ref{thm:zoh} with $A=\begin{bmatrix}0&1\\-\omega^2&-2\zeta\omega\end{bmatrix}$ and $B=\begin{bmatrix}0\\\omega^2\end{bmatrix}$, joint $i$ of \eqref{eq:loop} gives
+$x[k+1]=A_dx[k]+B_du[k]$ for $x=[q,\dot q]^\top$ (the disturbance $c$ is handled in Section~\ref{sec:offset}). By induction,
+$x[k]=A_d^{k}x[0]+\sum_{j=0}^{k-1}A_d^{k-1-j}B_du[j]$. For one joint, with horizon $N$, model state $\hat x_0$ and output-disturbance estimate $\hat d$, the predicted positions and velocities are therefore
+\begin{equation}\label{eq:pred}
+\hat q_k=e_1^\top A_d^{k}\hat x_0+\sum_{j=0}^{k-1}e_1^\top A_d^{k-1-j}B_d\,u_j+\hat d,\qquad
+\hat v_k=e_2^\top A_d^{k}\hat x_0+\sum_{j=0}^{k-1}e_2^\top A_d^{k-1-j}B_d\,u_j,\qquad k=1,\dots,N,
+\end{equation}
+that is $\hat q=\Phi_q\hat x_0+G_qU+\hat d\mathbf 1$ and $\hat v=\Phi_v\hat x_0+G_vU$ with $U=[u_0,\dots,u_{N-1}]^\top$, $(\Phi_q)_{k}=e_1^\top A_d^k$, and $G_q,G_v$ lower-triangular Toeplitz with
+$(G_q)_{kj}=e_1^\top A_d^{k-1-j}B_d$ for $j<k$.
+
+\subsection{The quadratic program}
+Let $r_k$ be the reference preview, $r_k=q_{s,\mathrm{ref}}+k\Delta t\,S\dot q_m$ (constant master velocity over the horizon), $w=(Q,\dots,Q,P)$, $W=\diag(w)$, $D$ the unit lower-bidiagonal difference matrix
+($(DU)_k=u_k-u_{k-1}$) and $d_0=[u_{-1},0,\dots,0]^\top$ with $u_{-1}$ the last applied command:
+\begin{equation}\label{eq:mpc}
+\min_{U}\ \ (\hat q-r)^\top W(\hat q-r)+R\,\|DU-d_0\|^2\quad\text{s.t.}\quad
+q_{\min}\le u_k\le q_{\max},\quad |u_k-u_{k-1}|\le\Delta u_{\max},\quad |\hat v_k|\le\dot q_{\max}.
+\end{equation}
+
+\begin{proposition}[condensed form]\label{prop:qp}
+Let $a=\Phi_q\hat x_0+\hat d\mathbf 1-r$. Then \eqref{eq:mpc} equals $\tfrac12U^\top HU+f^\top U+\mathrm{const}$ subject to $l\le CU\le h$, with
+\begin{equation}\label{eq:H}
+H=2\big(G_q^\top WG_q+R\,D^\top D\big),\qquad f=2G_q^\top Wa-2R\,D^\top d_0,\qquad C=\begin{bmatrix}I\\D\\G_v\end{bmatrix},
+\end{equation}
+\[
+l=\begin{bmatrix}q_{\min}\mathbf1\\ d_0-\Delta u_{\max}\mathbf1\\ -\dot q_{\max}\mathbf1-\Phi_v\hat x_0\end{bmatrix},\qquad
+h=\begin{bmatrix}q_{\max}\mathbf1\\ d_0+\Delta u_{\max}\mathbf1\\ \dot q_{\max}\mathbf1-\Phi_v\hat x_0\end{bmatrix}.
+\]
+$H\succ0$ for $R>0$, so a feasible problem has a unique minimiser.
+\end{proposition}
+\begin{proof}
+Expand $(G_qU+a)^\top W(G_qU+a)+R(DU-d_0)^\top(DU-d_0)$ and collect the terms quadratic and linear in $U$. The second constraint group is $(DU)_k\in[(d_0)_k-\Delta u_{\max},(d_0)_k+\Delta u_{\max}]$, because
+$(DU)_0-u_{-1}=u_0-u_{-1}$ and $(DU)_k=u_k-u_{k-1}$ for $k\ge1$; the third is $G_vU\in[-\dot q_{\max}-\Phi_v\hat x_0,\ \dot q_{\max}-\Phi_v\hat x_0]$.
+$D$ is unit lower bidiagonal, hence invertible, so $D^\top D\succ0$; and $G_q^\top WG_q\succeq0$ since $W\succeq0$.
+\end{proof}
+
+\subsection{Solving the QP: ADMM}\label{sec:admm}
+With the auxiliary variable $Z=CU$, ADMM with proximal weight $\sigma>0$ and penalty $\rho>0$ iterates
+\begin{align}
+U^{+}&=(H+\sigma I+\rho C^\top C)^{-1}\big(\sigma U-f+C^\top(\rho Z-y)\big),\label{eq:admmU}\\
+Z^{+}&=\Pi_{[l,h]}\big(CU^{+}+y/\rho\big),\qquad y^{+}=y+\rho\,(CU^{+}-Z^{+}),\label{eq:admmZ}
+\end{align}
+which is the OSQP scheme without over-relaxation \cite{stellato2020osqp}, a special case of ADMM \cite{boyd2011admm}.
+\begin{proposition}[ADMM]\label{prop:admm}
+(i) \eqref{eq:admmU} minimises $\tfrac12U^\top HU+f^\top U+\tfrac\sigma2\|U-U^k\|^2+\tfrac\rho2\|CU-Z^k+y^k/\rho\|^2$.
+(ii) A fixed point $(U,Z,y)$ of \eqref{eq:admmU}--\eqref{eq:admmZ} satisfies the KKT conditions of \eqref{eq:mpc}: $HU+f+C^\top y=0$, $Z=CU\in[l,h]$, $y\in N_{[l,h]}(Z)$.
+(iii) The matrix $H+\sigma I+\rho C^\top C$ does not depend on $\hat x_0$, $r$, $u_{-1}$, $\hat d$ or the bounds, so it is inverted once; an iteration costs one $N\times N$ product and one clipping per joint.
+(iv) For any $\rho,\sigma>0$ and a feasible convex QP the iterates converge to a KKT point \cite{boyd2011admm,stellato2020osqp}.
+\end{proposition}
+\begin{proof}
+(i) The gradient condition is $HU+f+\sigma(U-U^k)+\rho C^\top(CU-Z^k+y^k/\rho)=0$, i.e.\ \eqref{eq:admmU}. (ii) At a fixed point the $y$-update gives $CU=Z$; the $Z$-update gives $Z=\Pi(Z+y/\rho)$,
+i.e.\ $y/\rho$ lies in the normal cone of $[l,h]$ at $Z$; and \eqref{eq:admmU} with $U^+=U^k=U$, $Z^k=Z$ reduces to $HU+\rho C^\top CU=-f+\rho C^\top Z-C^\top y$, which with $CU=Z$ is $HU+f+C^\top y=0$.
+(iii) is read off. (iv) is the cited result.
+\end{proof}
+
+\paragraph{Iteration budget and choice of $\rho$.}
+The controller runs a fixed budget of $60$ warm-started iterations per tick, so the accuracy of the first move depends on $\rho$. With $\sigma=10^{-6}$ and $\rho=0.3$, the applied first move is within
+$0.03$\,mrad on average ($0.2$\,mrad at most) of the exact QP solution over a closed-loop run, and within $2$\,mrad from a cold start. A large penalty slows convergence in this problem: with $\rho=10$
+the warm-started first move is on average $13$\,mrad from the exact solution. A solve takes about $0.9$\,ms for five joints.
+\test{test\_admm\_solves\_the\_stated\_qp (reference: SLSQP on the same QP data), test\_applied\_command\_always\_respects\_limits}
+
+\begin{proposition}[the applied command is always admissible]\label{prop:feas}
+After the solve, $u_0^\star$ is clipped to $[q_{\min},q_{\max}]$ and then to $[u_{-1}-\Delta u_{\max},u_{-1}+\Delta u_{\max}]$. If $u_{-1}\in[q_{\min},q_{\max}]$ the intersection of the two intervals is
+non-empty and contains the result, so the applied command satisfies the position and rate limits regardless of solver accuracy. The predicted-velocity bound is enforced only through the QP.
+\end{proposition}
+\begin{proof}
+$u_{-1}$ belongs to both intervals $I_1=[q_{\min},q_{\max}]$ and $I_2=[u_{-1}-\Delta u_{\max},u_{-1}+\Delta u_{\max}]$. Let $p\in I_1$ be the result of the first clip and $c$ that of the second, so $c\in I_2$.
+If $p\in I_2$ then $c=p\in I_1$. Otherwise $c$ is the end point of $I_2$ nearest to $p$, which lies between $p$ and $u_{-1}$; both are in the interval $I_1$, hence so is $c$.
+\end{proof}
+
+\subsection{Offset-free tracking}\label{sec:offset}
+The servo position loop has no gravity feed-forward, so under a constant load joint $i$ settles at $u+c/\omega^2$ rather than at $u$. The model \eqref{eq:pred} without $\hat d$ cannot predict this.
+The controller therefore runs the model in parallel with the plant (\emph{internal-model} form), $\hat x[k+1]=A_d\hat x[k]+B_du[k]$, and estimates an output disturbance
+\begin{equation}\label{eq:dhat}
+\hat d[k+1]=(1-\alpha_d)\hat d[k]+\alpha_d\big(q[k]-\hat x_1[k]\big),\qquad 0<\alpha_d\le1,
+\end{equation}
+with $\alpha_d=0.2$.
+\begin{proposition}[offset-free]\label{prop:offsetfree}
+Let the plant be \eqref{eq:loop} with constant $c$ and $u\equiv u_\infty$. Then $\hat d\to c/\omega^2$. Moreover, if the reference is constant, $r\equiv r_\infty$, and $u_\infty=r_\infty-\hat d$ lies within the limits,
+then $(u_\infty,\ \hat d=c/\omega^2)$ is an equilibrium of the closed loop at which the plant position equals $r_\infty$.
+\end{proposition}
+\begin{proof}
+The plant converges to $q_\infty=u_\infty+c/\omega^2$ ($A_d$ is Schur by Proposition~\ref{prop:euler}(i), applied to the loop with $M_d=1$, $D_d=2\zeta\omega$, $K_d=\omega^2$); the parallel model converges
+to $\hat x_{1,\infty}=u_\infty$. Hence $q-\hat x_1\to c/\omega^2$, and the stable recursion \eqref{eq:dhat} (pole $1-\alpha_d$) converges to the same value. For the second claim, with $\hat d=c/\omega^2$ and
+$U\equiv u_\infty=r_\infty-\hat d$, the predictions satisfy $\hat q_k=r_\infty$ for all $k$ and $DU-d_0=0$, so the cost of \eqref{eq:mpc} is $0$, its global minimum; by Proposition~\ref{prop:qp}
+the minimiser is unique, so the MPC returns $u_\infty$ and the plant settles at $u_\infty+c/\omega^2=r_\infty$.
+\end{proof}
+\test{test\_offset\_free\_estimate\_converges\_and\_removes\_steady\_state\_error (sag $48$\,mrad removed; $\hat d$ within $2\%$)}
+This is the standard offset-free MPC mechanism \cite{muske2002,pannocchia2003}. Proposition~\ref{prop:offsetfree} establishes the zero-error equilibrium, not its asymptotic stability, which is
+checked in simulation only.
+
+\subsection{What is not claimed}
+No terminal cost or terminal set with a Lyapunov argument is used, so closed-loop stability of the MPC is not proven; $N=10$, $Q=100$, $P=300$ and $R=0.5$ were chosen in simulation.
+The prediction model is decoupled per joint.
+
+%% =====================================================================
+\section{Energy tank on the force channel}\label{sec:tank}
+%% =====================================================================
+Let $P_{out}[k]=\tau_f[k]^\top\dot q_m[k]$ be the power the (ungated) feedback channel delivers to the operator--master system, and
+$P_{in}[k]=\eta\big(\dot q_m^\top D_{md}\dot q_m+\dot q_e^\top D_d\dot q_e\big)[k]\ge0$ ($0<\eta\le1$) the power the controller dissipates through its two damping terms (master damping and admittance damping).
+The tank state is $T[k]\in[T_{\min},T_{\max}]$, $0<T_{\min}\le T[0]\le T_{\max}$, and the gate $\gamma[k]\in[0,1]$ scales the feedback torque:
+\begin{align}
+\gamma[k]&=\begin{cases}1&\text{if }P_{out}[k]\le0\ \text{ or }\ b[k]\ge\Delta t\,P_{out}[k],\\[2pt]\dfrac{b[k]}{\Delta t\,P_{out}[k]}&\text{otherwise,}\end{cases}\qquad b[k]=T[k]+\Delta tP_{in}[k]-T_{\min},\label{eq:gamma}\\
+T[k+1]&=\min\big\{T_{\max},\ T[k]+\Delta t\,(P_{in}[k]-\gamma[k]P_{out}[k])\big\}.\label{eq:tank}
+\end{align}
+The simulation uses $T[0]=0.5$\,J, $T_{\min}=0.05$\,J, $T_{\max}=1$\,J and $\eta=1$.
+
+\begin{theorem}[bounded delivered energy]\label{thm:tank}
+For any signals $\tau_f,\dot q_m$ and any $P_{in}\ge0$, and every $K\ge1$:
+(i) $\gamma[k]\in[0,1]$ and $T[k]\ge T_{\min}$ for all $k$;
+(ii) the energy delivered by the gated feedback channel is bounded,
+\begin{equation}\label{eq:bound}
+\sum_{k=0}^{K-1}\Delta t\,\gamma[k]P_{out}[k]\ \le\ T[0]-T_{\min}+\sum_{k=0}^{K-1}\Delta t\,P_{in}[k].
+\end{equation}
+\end{theorem}
+\begin{proof}
+(i) By induction on $T[k]\ge T_{\min}$. Since $P_{in}\ge0$, $b[k]\ge0$, so $\gamma\ge0$, and $\gamma\le1$ by construction. If $P_{out}\le0$, then $\gamma=1$ and
+$T[k+1]=\min\{T_{\max},T[k]+\Delta t(P_{in}+|P_{out}|)\}\ge\min\{T_{\max},T[k]\}\ge T_{\min}$. If $P_{out}>0$ and $b\ge\Delta tP_{out}$, then $\gamma=1$ and
+$T[k]+\Delta t(P_{in}-P_{out})=b+T_{\min}-\Delta tP_{out}\ge T_{\min}$. Otherwise $\gamma\Delta tP_{out}=b$ and $T[k]+\Delta tP_{in}-b=T_{\min}$. In every case the argument of the $\min$ in \eqref{eq:tank}
+is $\ge T_{\min}$, and $T_{\max}\ge T_{\min}$.
+(ii) Write \eqref{eq:tank} as $T[k+1]=T[k]+\Delta t(P_{in}-\gamma P_{out})-c[k]$ with the clipping loss $c[k]\ge0$. Summing over $k$,
+$\sum\Delta t\gamma P_{out}=T[0]-T[K]+\sum\Delta tP_{in}-\sum c[k]\le T[0]-T_{\min}+\sum\Delta tP_{in}$, using $T[K]\ge T_{\min}$ and $c\ge0$.
+\end{proof}
+\test{test\_tank\_energy\_bound\_theorem (random signals, 5000 steps), test\_energy\_tank\_never\_below\_minimum}
+
+\paragraph{Reading of the result.}
+Whatever the force estimate does, the feedback channel returns to the operator at most the energy the controller has dissipated plus the initial reserve $T[0]-T_{\min}$, and $T_{\max}$ caps how much can be
+released in a burst. Combined with Proposition~\ref{prop:masterpass}, the gated master satisfies $\dot V\le\dot q^\top\tau_h-\dot q^\top D_{md}\dot q+\gamma P_{out}$, with the last term energetically bounded by
+\eqref{eq:bound}. The construction follows the energy-tank architectures of \cite{ferraguti2015,franken2011}.
+
+\paragraph{What it does not say.}
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+\item \eqref{eq:bound} uses the Riemann sum $\Delta t\,\tau_f^\top\dot q_m$ for the energy of a sample; it is exact only up to the discretisation error of that product.
+\item It bounds the energy delivered by the \emph{master-side} controller. With communication delay the slave-side quantities in $\tau_f$ are stale, and a delayed channel is not passive in general
+\cite{anderson1989}. A two-port tank or time-domain passivity control with energy exchange between the sites \cite{franken2011,hannaford2002} is required for delayed operation. In the simulation study the tank
+lowers the worst-case tracking error without delay (from $0.87$ to $0.50$\,rad at $k_{of}=1.0$, from $1.99$ to $0.72$\,rad at $k_{of}=1.5$) and gives no consistent benefit at $20$--$60$\,ms of delay.
+\item Passivity of the controller port together with a passive operator and environment yields stability of the interconnection; neither passivity is verified here.
+\end{itemize}
+
+%% =====================================================================
+\section{Identification of the servo position loop}\label{sec:ident}
+%% =====================================================================
+Given a log of commands $u[k]$ and measured positions $q[k]$ of one joint at times $t_k$, the parameters $\theta=(\omega,\zeta,c)$ of \eqref{eq:loop} are estimated by output-error least squares:
+\begin{equation}\label{eq:ident}
+\hat\theta=\arg\min_\theta\ \sum_k\big(q[k]-\hat q_\theta[k]\big)^2,
+\end{equation}
+where $\hat q_\theta$ is the response of \eqref{eq:loop} to the logged $u$ held constant over each sample (zero-order hold, integrated with a $1$\,ms semi-implicit Euler sub-step) from the logged initial
+position at rest. The quality of the fit is reported as $R^2=1-\sum_k(q[k]-\hat q_{\hat\theta}[k])^2/\sum_k(q[k]-\bar q)^2$. On the simulated slave, step tests of $0.15$\,rad per joint gave
+$\omega=[25.7,23.4,31.1,98.7,94.6]$\,rad/s and $\zeta=[0.27,0.30,0.42,0.66,0.46]$. Output-error identification (rather than equation-error regression on $\ddot q$) avoids differentiating
+the encoder signal twice.
+
+\subsection{Validation of the prediction model}\label{sec:validation}
+For a logged run, at every tick $k$ the controller's own model (parallel state and $\hat d$, exactly as in the MPC) predicts the slave position $h$ ticks ahead for the commands that were actually applied.
+The RMS prediction error over three operator seeds was
+\begin{center}\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Predictor & $h=1$ (20\,ms) & $h=2$ (40\,ms) & $h=5$ (100\,ms) & $h=10$ (200\,ms)\\
+\midrule
+hold last position & 12.0 & 23.8 & 57.6 & 108.9\\
+constant velocity & 2.8 & 7.8 & 28.6 & 71.9\\
+position loop, $\hat d=0$ & 26.4 & 26.4 & 26.5 & 26.6\\
+position loop with $\hat d$ (MPC model) & 5.1 & 6.1 & 7.5 & 6.8\\
+\bottomrule
+\end{tabular}
+
+\smallskip
+RMS error in mrad, pooled over the five joints (simulation).
+\end{center}
+Without $\hat d$ the model is biased by the static sag of the servos; with $\hat d$ it is the most accurate predictor from $h=5$ on, the horizon the MPC uses, whereas constant-velocity extrapolation
+is better for the first $40$\,ms.
+
+%% =====================================================================
+\section{Simulation model}\label{sec:sim}
+%% =====================================================================
+The study uses MuJoCo models of both arms, built from the same robot descriptions (URDF) as the controller, whose dynamics are computed with Pinocchio. Physics runs at $\Delta t_{sim}=1$\,ms and
+control at $\Delta t=20$\,ms.
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{Model mismatch.} Link masses and inertias are scaled by $1.08$ in the plant only. Joint viscous damping $[0.03,0.05,0.04,0.02,0.01]$\,N\,m\,s/rad and Coulomb friction
+$[0.04,0.08,0.06,0.03,0.01]$\,N\,m are present in the plant and not in the controller.
+\item \textbf{Slave servo.} $\tau_s=\sat_{\tau_{stall}}\big(K_p^{s}(u-q_s)-K_d^{s}\dot q_s\big)$ with $K_p^{s}=[60,150,100,25,6]$\,N\,m/rad, $K_d^{s}=[1.2,3.0,2.0,0.25,0.05]$\,N\,m\,s/rad,
+stall torques $[10.6,21.2,21.2,10.6,4.1]$\,N\,m, no gravity feed-forward.
+\item \textbf{Master.} The commanded torque is applied directly (current mode), saturated at the stall torques $[4.1,8.2,4.1,4.1,1.5]$\,N\,m.
+\item \textbf{Sensors.} Positions are quantised to $2\pi/4096$. The reported current of each arm is $I=10^3\tau/(n_\mu k_t)+\nu$, $\nu\sim\mathcal N(0,5^2)$\,mA, quantised to $2.69$\,mA; for the master, $\tau$
+is the command of the previous tick, for the slave the servo torque of the last physics step.
+\item \textbf{Operator.} $\tau_h=K_h(q^{\star}(t)-q_m)-B_h\dot q_m$ with $K_h=[6,10,6,2,0.5]$\,N\,m/rad, $B_h=[0.2,0.3,0.2,0.05,0.02]$\,N\,m\,s/rad and an intended trajectory $q^\star$.
+In the benchmark, $q^\star$ is a sum of sinusoids (amplitudes $[0.6,0.25,0.3,0.4,0.6]$\,rad, $0.25$--$0.5$\,Hz) for $12$\,s, then two raised-cosine pushes of the shoulder towards a wall.
+For the seed $s>0$, amplitudes are scaled by $\mathcal U(0.75,1.25)$, frequencies by $\mathcal U(0.85,1.15)$, phases are drawn from $\mathcal U(0,2\pi)$, and the push amplitude and frequency are scaled.
+\item \textbf{Environment.} A wall $x=x_w$ in the slave base frame, $3$\,cm in front of the start pose, with penalty contact $F_x=-\max\{k\,p+b\,\dot p,0\}$ for penetration $p>0$, $k=2000$\,N/m (varied
+from $500$ to $10\,000$), $b=30$\,N\,s/m.
+\item \textbf{Delay.} For a one-way delay of $d$ ticks, the master-side and the slave-side controllers run as separate instances, each receiving the other arm's measurements $d$ ticks late.
+\item \textbf{Force felt by the operator.} $f_{felt}=\arg\min_f\|J_m^\top f-(\tau_{m,applied}-G_m^{true})\|$: the Cartesian force equivalent to the net non-gravitational torque of the master motors.
+\end{itemize}
+
+%% =====================================================================
+\section{Metrics}\label{sec:metrics}
+%% =====================================================================
+\subsection{Tracking}
+For errors $e[k,j]=q_s[k,j]-q_m[k,j]$ over $K$ samples and $J$ joints, $\mathrm{RMSE}_j=\sqrt{\tfrac1K\sum_ke[k,j]^2}$, $\mathrm{MAE}_j=\tfrac1K\sum_k|e[k,j]|$, $\mathrm{Max}_j=\max_k|e[k,j]|$, and the
+\emph{pooled} RMSE is $\mathrm{RMSE}_{\rm pool}=\sqrt{\tfrac1{KJ}\sum_{k,j}e[k,j]^2}=\sqrt{\tfrac1J\sum_j\mathrm{RMSE}_j^2}$.
+
+\begin{proposition}\label{prop:rmse}
+$\tfrac1J\sum_j\mathrm{RMSE}_j\le\mathrm{RMSE}_{\rm pool}$, with equality iff all $\mathrm{RMSE}_j$ are equal.
+\end{proposition}
+\begin{proof}
+By Jensen's inequality (convexity of $x\mapsto x^2$), $\big(\tfrac1J\sum_ja_j\big)^2\le\tfrac1J\sum_ja_j^2$ for $a_j=\mathrm{RMSE}_j$, with equality iff all $a_j$ coincide.
+\end{proof}
+For the hardware trials of the paper (Table~I), the per-joint values $0.2250$, $0.2715$, $0.3609$, $0.3152$ and $0.5366$\,rad give a pooled RMSE of $0.3583$\,rad (the ``Overall'' row) and a mean of the
+per-joint RMSEs of $0.3418$\,rad.
+\test{test\_mean\_of\_joint\_rmse\_never\_exceeds\_pooled\_rmse, test\_pooled\_rmse\_is\_not\_mean\_of\_rmse}
+
+The \emph{lag} of joint $j$ is $s^\star\Delta t$ with $s^\star=\arg\max_{0\le s\le s_{\max}}\varrho(q_m[0{:}K{-}s],\,q_s[s{:}K])$, $\varrho$ the Pearson correlation, at the resolution of one sample (20\,ms);
+the \emph{lag-compensated RMSE} is the RMSE of $q_s[s^\star{:}]-q_m[{:}K{-}s^\star]$. The table entries ``free'' use the first $12$\,s of the task and ``all'' the whole task.
+
+\subsection{Force and estimation}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{Force correlation} (benchmark): Pearson correlation of $f_{felt,x}$ and the true wall force over the contact samples.
+\item \textbf{Rendered gain} (force reproduction): the least-squares slope of the felt force on the ideal one, $g=\sum_kf_{felt}[k]\,f_{ref}[k]\,/\sum_kf_{ref}[k]^2$ with $f_{ref}=k_{of}F_{env}$, over the samples with
+$\|F_{env}\|>0.2$\,N, per axis; $g=1$ is exact scaled reproduction. The correlation is computed over the same samples.
+\item \textbf{Weight rendering}: the mean vertical felt force over the last $2$\,s of holding a mass $m$, regressed on $mg$ (slope and offset).
+\item \textbf{Estimation error}: RMS of $\hat\tau_{ext}[k+1]-\tau_{ext}[k]$ (the estimate at a tick uses the current measured at the end of the previous tick) over the loaded samples, excluding $0.3$\,s after
+each load change; the \emph{false torque} is the RMS estimate over the unloaded samples.
+\end{itemize}
+Each multi-seed entry is the sample mean and standard deviation ($n-1$ normalisation) over five seeds; the seeds pair the controllers (same noise and operator for all controllers in a seed).
+
+%% =====================================================================
+\section{Parameter tuning in the Control Simulator}\label{sec:tuning}
+%% =====================================================================
+\subsection{Plant and control law}
+The Control Simulator evaluates a free-text control law on the mass--spring--damper $m\ddot y+b\dot y+ky=u$ with $m=1$\,kg, $b=0.5$\,N\,s/m, $k=2$\,N/m, integrated by explicit Euler with $h=10$\,ms,
+$x[i+1]=x[i]+h(Ax[i]+Bu[i])$, and $|u|\le10$. The law may read $e[i]=r[i]-y[i]$, $\mathcal I[i]=\sum_{j\le i}e[j]h$ and $\mathcal D[i]=(e[i]-e[i-1])/h$ with $e[-1]=0$ (so that
+$\mathcal D[0]=e[0]/h$, which saturates $u$ at the first sample of a step). For the PID law $u=K_pe+K_i\mathcal I+K_d\mathcal D$ and $h\to0$, the closed loop without saturation is
+$m\ddot y+(b+K_d)\dot y+(k+K_p)y+K_i\!\int\! y=K_pr+K_i\!\int\! r+K_d\dot r$, whose characteristic polynomial $ms^3+(b+K_d)s^2+(k+K_p)s+K_i$ is Hurwitz iff all coefficients are positive and
+$(b+K_d)(k+K_p)>mK_i$ (Routh--Hurwitz), e.g.\ $0.9\cdot10=9>0.5$ for $K_p=8$, $K_i=0.5$, $K_d=0.4$.
+
+\subsection{Objectives}
+For a run with samples $t_i=ih$, $i=0,\dots,N_s$:
+\[
+\mathrm{ISE}=\sum_ie_i^2h,\qquad \mathrm{IAE}=\sum_i|e_i|h,\qquad \mathrm{ITAE}=\sum_it_i|e_i|h,\qquad \text{overshoot}=100\,\frac{\max_iy_i-r_\infty}{|r_\infty|}\,\%,
+\]
+the rise time is the time between the first samples with $y\ge0.1r_\infty$ and $y\ge0.9r_\infty$, and the settling time is the first $t_i$ after which $|y-r_\infty|\le0.02|r_\infty|$ for all later samples.
+
+\subsection{Search}
+The parameters declared with \texttt{@param} define a box $\Theta=\prod_p[\theta_p^{\min},\theta_p^{\max}]$. The tuner solves $\min_{\theta\in\Theta}J(\theta)$, with $J$ one of the objectives above, by differential
+evolution \cite{storn1997de} (followed by a bounded quasi-Newton polish) or by Nelder--Mead/Powell. Because $J$ is evaluated by simulation, only the box constraints of the declaration are enforced;
+saturation of $u$ makes $J$ non-smooth, which is why a population method is the default.
+
+%% =====================================================================
+\section{What is not proven, and what hardware must confirm}\label{sec:limits}
+%% =====================================================================
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+\item \textbf{Closed-loop stability} of the MPC (no terminal ingredients) and of the full teleoperation loop, in particular with delay.
+\item \textbf{Model validity on the real arm}: decoupled second-order position loop with a constant disturbance (Assumption~\ref{as:loop}); the reported $\omega_i,\zeta_i$ were identified on the simulated slave.
+Backlash, the servo velocity/acceleration profiles and current limiting are not modelled.
+\item \textbf{Torque constants and inertial parameters} (Remark~\ref{rem:bias}): the observer's accuracy is limited by $k_t$, the link masses and friction, which must be calibrated.
+\item \textbf{Energy accounting} is sampled-data (Section~\ref{sec:tank}); $P_{in}$ assumes the master's and the admittance's damping terms are implemented as written.
+\item The \textbf{dead zones, gains and the horizon} were chosen in simulation.
+\end{enumerate}
+
+\begin{thebibliography}{99}\small
+\bibitem{vanloan1978} C.~F. Van Loan, ``Computing integrals involving the matrix exponential,'' \emph{IEEE Trans. Autom. Control}, vol.~23, no.~3, pp.~395--404, 1978.
+\bibitem{delucamattone2003} A.~De~Luca and R.~Mattone, ``Actuator failure detection and isolation using generalized momenta,'' in \emph{Proc. IEEE ICRA}, 2003, vol.~1, pp.~634--639.
+\bibitem{stellato2020osqp} B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: An operator splitting solver for quadratic programs,'' \emph{Math. Program. Comput.}, vol.~12, no.~4, pp.~637--672, 2020.
+\bibitem{boyd2011admm} S.~Boyd, N.~Parikh, E.~Chu, B.~Peleato, and J.~Eckstein, ``Distributed optimization and statistical learning via the alternating direction method of multipliers,'' \emph{Found. Trends Mach. Learn.}, vol.~3, no.~1, pp.~1--122, 2011.
+\bibitem{muske2002} K.~R. Muske and T.~A. Badgwell, ``Disturbance modeling for offset-free linear model predictive control,'' \emph{J. Process Control}, vol.~12, no.~5, pp.~617--632, 2002.
+\bibitem{pannocchia2003} G.~Pannocchia and J.~B. Rawlings, ``Disturbance models for offset-free model-predictive control,'' \emph{AIChE J.}, vol.~49, no.~2, pp.~426--437, 2003.
+\bibitem{ferraguti2015} F.~Ferraguti, N.~Preda, A.~Manurung, M.~Bonf\`e, O.~Lambercy, R.~Gassert, R.~Muradore, P.~Fiorini, and C.~Secchi, ``An energy tank-based interactive control architecture for autonomous and teleoperated robotic surgery,'' \emph{IEEE Trans. Robot.}, vol.~31, no.~5, pp.~1073--1088, 2015.
+\bibitem{franken2011} M.~Franken, S.~Stramigioli, S.~Misra, C.~Secchi, and A.~Macchelli, ``Bilateral telemanipulation with time delays: A two-layer approach combining passivity and transparency,'' \emph{IEEE Trans. Robot.}, vol.~27, no.~4, pp.~741--756, 2011.
+\bibitem{hannaford2002} B.~Hannaford and J.-H. Ryu, ``Time-domain passivity control of haptic interfaces,'' \emph{IEEE Trans. Robot. Autom.}, vol.~18, no.~1, pp.~1--10, 2002.
+\bibitem{anderson1989} R.~J. Anderson and M.~W. Spong, ``Bilateral control of teleoperators with time delay,'' \emph{IEEE Trans. Autom. Control}, vol.~34, no.~5, pp.~494--501, 1989.
+\bibitem{storn1997de} R.~Storn and K.~Price, ``Differential evolution -- A simple and efficient heuristic for global optimization over continuous spaces,'' \emph{J. Global Optim.}, vol.~11, no.~4, pp.~341--359, 1997.
+\end{thebibliography}
+\end{document}

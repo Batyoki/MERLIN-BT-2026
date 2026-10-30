@@ -1,0 +1,31 @@
+# Python dependencies of MERLIN (ROS 2 Humble and the Interbotix driver are installed separately,
+# see InterbotixDriver/README.md). Install the application itself with: pip install -e "arm_bench_dev[full]"
+
+# application (arm_bench) and controller
+numpy
+scipy
+pyyaml
+typer
+rich
+pillow
+matplotlib
+opencv-python
+pygame
+dynamixel-sdk
+fastapi
+uvicorn
+websockets
+h5py
+pupil-apriltags
+pin                 # Pinocchio rigid-body dynamics (controller model)
+
+# Control Simulator window
+PyQt5
+oct2py              # GNU Octave fallback when the MATLAB Engine for Python (matlabengine) is not installed
+
+# simulation study (experiments/bilateral_sim)
+mujoco
+
+# tests
+pytest
+httpx

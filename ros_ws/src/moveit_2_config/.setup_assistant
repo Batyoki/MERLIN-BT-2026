@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: interbotix_xsarm_descriptions
+    relative_path: urdf/vx300s.urdf.xacro
+  srdf:
+    relative_path: config/vx300s.srdf
+  package_settings:
+    author_name: YSP
+    author_email: ysp@iitdh.ac.in
+    generated_timestamp: 1764675475
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
