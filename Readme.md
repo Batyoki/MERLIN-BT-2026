@@ -6,11 +6,11 @@ launch management), a **geometry-aware data-collection pipeline** (camera calibr
 episodes in HDF5), and an **in-GUI environment for developing and tuning control laws** (MATLAB engine). The reference
 setup is a ReactorX 200 master and a ViperX 300S slave.
 
-> **Status.** The software, the controller mathematics and the simulation study are implemented and tested. The
-> bilateral controller described below has **not yet been run on the real arms**; its results come from MuJoCo models of
+> **Status.** The software, the controller mathematics and the simulation study are implemented and tested. Its results come from MuJoCo models of
 > the arms. The hardware teleoperation trials (RMSE 0.358 rad, see [Results](#results)) used an earlier configuration of
 > the slave tracking loop. The protocol for the hardware measurements is in
 > [`docs/HARDWARE_VALIDATION.md`](docs/HARDWARE_VALIDATION.md).
+> Hardware testing and fine tuning is in progress, and version-2 of the code base will be released soon.
 
 Authors: Saipushkar Nagaraj, Yash Sanjeev Halbhavi, Ameer K. Mulla (IIT Dharwad). Video demonstration:
 <https://youtu.be/_An5y608v_o>.
